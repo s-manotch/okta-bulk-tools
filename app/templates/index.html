@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Okta Bulk User Tool</title>
+  <style>
+    :root{color-scheme:dark;--bg:#07101f;--card:#111827;--muted:#94a3b8;--line:#334155;--good:#22c55e;--warn:#f59e0b;--bad:#ef4444;--accent:#38bdf8}
+    *{box-sizing:border-box} body{margin:0;font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:#e5e7eb}
+    .wrap{max-width:1240px;margin:28px auto;padding:0 18px} h1{margin-bottom:5px} h2{margin-top:0}.sub,.muted{color:var(--muted)}
+    .tabs{display:flex;gap:8px;flex-wrap:wrap;margin:20px 0}.tab{background:#1e293b;color:#cbd5e1}.tab.active{background:var(--accent);color:#082f49}
+    .panel{display:none}.panel.active{display:block}.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:20px;margin:16px 0}
+    .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+    input,button,select{font:inherit} input[type=text],input[type=file],select{padding:10px 11px;border-radius:9px;border:1px solid var(--line);background:#0f172a;color:#e5e7eb}
+    input[type=text],input[type=file]{width:100%} select{min-width:280px} button{padding:10px 15px;border:0;border-radius:9px;cursor:pointer;background:var(--accent);color:#082f49;font-weight:700}
+    button.secondary{background:#334155;color:#e5e7eb} button.danger{background:#ef4444;color:white} button:disabled{opacity:.45;cursor:not-allowed}
+    .pill{background:#0f172a;border:1px solid var(--line);padding:12px;border-radius:10px}.good{color:var(--good)}.warn{color:var(--warn)}.bad{color:var(--bad)}
+    .scroll{overflow:auto;max-height:520px}table{width:100%;border-collapse:collapse;margin-top:14px;font-size:14px}th,td{border-bottom:1px solid var(--line);padding:8px 7px;text-align:left;vertical-align:top}th{position:sticky;top:0;background:var(--card);color:#cbd5e1}
+    code{background:#0f172a;padding:2px 5px;border-radius:5px}.notice{border-left:4px solid var(--warn);padding:10px 12px;background:#1f2937;margin:12px 0}.groupbox{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}.badge{background:#1e293b;padding:5px 8px;border-radius:999px;font-size:13px}
+    label.check{display:flex;gap:8px;align-items:center}.wide{flex:1;min-width:280px}
+  </style>
+</head>
+<body><div class="wrap">
+  <h1>Okta Bulk User Tool <span class="muted" style="font-size:16px">v0.2</span></h1>
+  <div class="sub">Tenant: <code>{{ domain or 'NOT CONFIGURED' }}</code> · Auth: <code>{{ auth_mode }}</code></div>
+  <div class="tabs">
+    <button class="tab active" onclick="showTab('create',this)">Create Users</button>
+    <button class="tab" onclick="showTab('resend',this)">Resend Activation</button>
+    <button class="tab" onclick="showTab('lookup',this)">User Lookup</button>
+  </div>
+
+  <section id="create" class="panel active">
+    <div class="card">
+      <h2>Create Users + Group + Activation</h2>
+      <p class="muted">CSV: <code>firstName,lastName,login,email</code>. Optional: <code>department,groups</code>. In <code>groups</code>, separate multiple group names with <code>;</code>.</p>
+      <div class="row">
+        <input id="createCsv" type="file" accept=".csv,text/csv" class="wide">
+        <select id="groupSelect"><option value="">กำลังโหลด Groups...</option></select>
+        <button class="secondary" onclick="addSelectedGroup()">+ Add Group</button>
+      </div>
+      <div id="selectedGroups" class="groupbox"></div>
+      <label class="check"><input id="sendActivation" type="checkbox"> ส่ง Activation Email หลังสร้างและใส่ Group สำเร็จ</label>
+      <div style="margin-top:12px"><button onclick="previewCreate()">Preview Create</button></div>
+      <div id="createSummary" class="grid" style="margin-top:16px"></div>
+      <div id="createPreviewArea"></div>
+      <div id="createPanel" style="display:none;margin-top:18px">
+        <div class="notice">สร้างจริงเฉพาะแถวที่ VALID และยังไม่มี user. ระบบจะ re-check ก่อนสร้างอีกครั้ง</div>
+        <div class="row">
+          <input id="createConfirm" type="text" placeholder="พิมพ์ CREATE เพื่อยืนยัน" style="max-width:280px">
+          <button class="danger" id="createBtn" onclick="createUsers()">Confirm & Create</button>
+          <button class="secondary" id="createDownload" onclick="downloadCreateResults()" style="display:none">Download Result CSV</button>
+        </div>
+        <div id="createStatus" style="margin-top:10px"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="resend" class="panel">
+    <div class="card">
+      <h2>Bulk Resend Activation</h2>
+      <p class="muted">CSV ต้องมีคอลัมน์ <code>login</code>. Preview ไม่ส่งเมล</p>
+      <div class="row"><input id="csvFile" type="file" accept=".csv,text/csv" class="wide"><button onclick="previewCsv()">Preview CSV</button></div>
+      <div id="summary" class="grid" style="margin-top:16px"></div><div id="previewArea"></div>
+      <div id="sendPanel" style="display:none;margin-top:18px">
+        <div class="notice">ส่งเฉพาะ PROVISIONED ที่มี reactivate action; ACTIVE จะถูกข้าม</div>
+        <div class="row"><input id="confirmText" type="text" placeholder="พิมพ์ SEND เพื่อยืนยัน" style="max-width:260px"><button class="danger" id="sendBtn" onclick="sendBulk()">Confirm & Send</button><button class="secondary" onclick="downloadResults()" id="downloadBtn" style="display:none">Download Result CSV</button></div>
+        <div id="sendStatus" style="margin-top:10px"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="lookup" class="panel">
+    <div class="card">
+      <h2>ค้นหา User รายคน</h2>
+      <div class="row"><input id="singleLogin" type="text" placeholder="manotchawit.user@consular.go.th" class="wide"><button onclick="lookupSingle()">Search</button></div>
+      <div id="singleResult" style="margin-top:12px"></div>
+    </div>
+  </section>
+</div>
+<script>
+let previewRows=[],sendResults=[],createPreviewRows=[],createResults=[],groups=[],selectedGroupIds=[];
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+function showTab(id,btn){document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');btn.classList.add('active')}
+async function jsonFetch(url,options={}){const r=await fetch(url,options);let d;try{d=await r.json()}catch{d={detail:await r.text()}}if(!r.ok)throw new Error(d.detail||JSON.stringify(d));return d}
+
+async function loadGroups(){try{const d=await jsonFetch('/api/groups');groups=d.groups;const s=document.getElementById('groupSelect');s.innerHTML='<option value="">เลือก Group...</option>'+groups.map(g=>`<option value="${esc(g.id)}">${esc(g.name)}${g.type?` (${esc(g.type)})`:''}</option>`).join('')}catch(e){document.getElementById('groupSelect').innerHTML='<option>โหลด Group ไม่สำเร็จ</option>'}}
+function addSelectedGroup(){const s=document.getElementById('groupSelect'),id=s.value;if(id&&!selectedGroupIds.includes(id)){selectedGroupIds.push(id);renderSelectedGroups()}}
+function removeGroup(id){selectedGroupIds=selectedGroupIds.filter(x=>x!==id);renderSelectedGroups()}
+function renderSelectedGroups(){document.getElementById('selectedGroups').innerHTML=selectedGroupIds.map(id=>{const g=groups.find(x=>x.id===id);return `<span class="badge">${esc(g?.name||id)} <a href="#" onclick="removeGroup('${esc(id)}');return false" class="bad">×</a></span>`}).join('')||'<span class="muted">ยังไม่ได้เลือก Global Group</span>'}
+
+async function previewCreate(){const file=document.getElementById('createCsv').files[0];if(!file)return alert('เลือก CSV ก่อน');const fd=new FormData();fd.append('file',file);fd.append('global_group_ids',JSON.stringify(selectedGroupIds));document.getElementById('createPreviewArea').innerHTML='<p class="muted">กำลัง validate และเช็ก user...</p>';document.getElementById('createPanel').style.display='none';try{const d=await jsonFetch('/api/create/preview',{method:'POST',body:fd});createPreviewRows=d.rows;const s=d.summary;document.getElementById('createSummary').innerHTML=`<div class="pill">Total <b>${s.total}</b></div><div class="pill">NEW <b class="good">${s.NEW}</b></div><div class="pill">EXISTS <b class="warn">${s.EXISTS}</b></div><div class="pill">INVALID <b class="bad">${s.INVALID}</b></div>`;renderCreateTable(createPreviewRows,false);document.getElementById('createPanel').style.display='block'}catch(e){document.getElementById('createPreviewArea').innerHTML=`<p class="bad">${esc(e.message)}</p>`}}
+function renderCreateTable(rows,withResult){document.getElementById('createPreviewArea').innerHTML='<div class="scroll"><table><thead><tr><th>#</th><th>Login</th><th>Email</th><th>Name</th><th>Department</th><th>Groups</th><th>State</th>'+(withResult?'<th>Result</th><th>Activation</th>':'')+'<th>Error</th></tr></thead><tbody>'+rows.map((r,i)=>`<tr><td>${i+1}</td><td>${esc(r.login)}</td><td>${esc(r.email)}</td><td>${esc(r.firstName)} ${esc(r.lastName)}</td><td>${esc(r.department)}</td><td>${esc((r.group_names||r.groups||[]).join(', '))}</td><td>${r.valid===false?'<span class="bad">INVALID</span>':r.exists?`<span class="warn">EXISTS ${esc(r.existing_status||'')}</span>`:'<span class="good">NEW</span>'}</td>${withResult?`<td>${esc(r.result)}</td><td>${esc(r.activation||'')}</td>`:''}<td class="bad">${esc((r.errors||[]).join('; ')||r.error||'')}</td></tr>`).join('')+'</tbody></table></div>'}
+async function createUsers(){if(document.getElementById('createConfirm').value!=='CREATE')return alert('พิมพ์ CREATE ให้ตรงก่อน');const rows=createPreviewRows.filter(r=>r.valid&&!r.exists).map(r=>({firstName:r.firstName,lastName:r.lastName,login:r.login,email:r.email,department:r.department||'',groups:r.groups||[]}));if(!rows.length)return alert('ไม่มี NEW user ที่พร้อมสร้าง');const sendActivation=document.getElementById('sendActivation').checked;if(!confirm(`สร้าง ${rows.length} users?\nGlobal groups: ${selectedGroupIds.length}\nSend activation: ${sendActivation?'YES':'NO'}`))return;const btn=document.getElementById('createBtn');btn.disabled=true;document.getElementById('createStatus').innerHTML='<span class="warn">กำลังสร้าง... อย่าปิดหน้านี้</span>';try{const d=await jsonFetch('/api/create/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({rows,global_group_ids:selectedGroupIds,send_activation:sendActivation,confirmation:'CREATE'})});createResults=d.results;renderCreateTable(createResults,true);const ok=createResults.filter(x=>x.result==='CREATED').length,partial=createResults.filter(x=>String(x.result).startsWith('PARTIAL')).length,skip=createResults.filter(x=>String(x.result).startsWith('SKIPPED')).length,err=createResults.length-ok-partial-skip;document.getElementById('createStatus').innerHTML=`<span class="good">CREATED ${ok}</span> · <span class="warn">PARTIAL ${partial}</span> · SKIPPED ${skip} · <span class="bad">ERROR ${err}</span>`;document.getElementById('createDownload').style.display='inline-block'}catch(e){document.getElementById('createStatus').innerHTML=`<span class="bad">${esc(e.message)}</span>`}finally{btn.disabled=false}}
+function downloadCreateResults(){if(!createResults.length)return;const h=['login','email','firstName','lastName','department','status','result','activation','id','error'];downloadCsv('okta_create_result.csv',h,createResults)}
+
+async function lookupSingle(){const login=document.getElementById('singleLogin').value.trim(),box=document.getElementById('singleResult');if(!login)return;box.innerHTML='<span class="muted">Loading...</span>';try{const u=await jsonFetch('/api/lookup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({login})});if(!u.ok){box.innerHTML=`<span class="bad">HTTP ${u.http}: ${esc(u.error)}</span>`;return}box.innerHTML=`<div class="grid"><div><b>Status</b><br><span class="${u.status==='PROVISIONED'?'warn':'good'}">${esc(u.status)}</span></div><div><b>Login</b><br>${esc(u.login)}</div><div><b>Email</b><br>${esc(u.email)}</div><div><b>Reactivate</b><br>${u.can_reactivate?'<span class="good">available</span>':'<span class="muted">not available</span>'}</div></div>`}catch(e){box.innerHTML=`<span class="bad">${esc(e.message)}</span>`}}
+async function previewCsv(){const file=document.getElementById('csvFile').files[0];if(!file)return alert('เลือก CSV ก่อน');const fd=new FormData();fd.append('file',file);document.getElementById('previewArea').innerHTML='<p class="muted">กำลังตรวจสอบ users...</p>';document.getElementById('sendPanel').style.display='none';try{const d=await jsonFetch('/api/bulk/preview',{method:'POST',body:fd});previewRows=d.rows;const s=d.summary;document.getElementById('summary').innerHTML=`<div class="pill">Total <b>${s.total}</b></div><div class="pill">PROVISIONED <b class="warn">${s.PROVISIONED}</b></div><div class="pill">ACTIVE <b class="good">${s.ACTIVE}</b></div><div class="pill">OTHER <b>${s.OTHER}</b></div><div class="pill">ERROR <b class="bad">${s.ERROR}</b></div>`;renderTable(previewRows,false);document.getElementById('sendPanel').style.display='block'}catch(e){document.getElementById('previewArea').innerHTML=`<p class="bad">${esc(e.message)}</p>`}}
+function renderTable(rows,withResult){document.getElementById('previewArea').innerHTML='<div class="scroll"><table><thead><tr><th>#</th><th>Login</th><th>Email</th><th>Status</th>'+(withResult?'<th>Result</th>':'')+'<th>Error</th></tr></thead><tbody>'+rows.map((u,i)=>`<tr><td>${i+1}</td><td>${esc(u.login||u.login_input)}</td><td>${esc(u.email)}</td><td>${esc(u.status||'-')}</td>${withResult?`<td>${esc(u.result)}</td>`:''}<td class="bad">${esc(u.error||'')}</td></tr>`).join('')+'</tbody></table></div>'}
+async function sendBulk(){if(document.getElementById('confirmText').value!=='SEND')return alert('พิมพ์ SEND ให้ตรงก่อน');const logins=previewRows.map(x=>x.login_input).filter(Boolean);if(!confirm(`ยืนยันส่ง activation ใหม่?\nประมวลผล ${logins.length} รายการ`))return;const btn=document.getElementById('sendBtn');btn.disabled=true;document.getElementById('sendStatus').innerHTML='<span class="warn">กำลังส่ง...</span>';try{const d=await jsonFetch('/api/bulk/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({logins,confirmation:'SEND'})});sendResults=d.results;renderTable(sendResults,true);const sent=sendResults.filter(x=>x.result==='SENT').length,skipped=sendResults.filter(x=>String(x.result).startsWith('SKIPPED')).length,errors=sendResults.length-sent-skipped;document.getElementById('sendStatus').innerHTML=`<span class="good">SENT ${sent}</span> · SKIPPED ${skipped} · <span class="bad">ERROR ${errors}</span>`;document.getElementById('downloadBtn').style.display='inline-block'}catch(e){document.getElementById('sendStatus').innerHTML=`<span class="bad">${esc(e.message)}</span>`}finally{btn.disabled=false}}
+function downloadResults(){if(!sendResults.length)return;downloadCsv('okta_activation_result.csv',['login','email','status','result','http','error'],sendResults)}
+function downloadCsv(name,headers,rows){const q=v=>'"'+String(v??'').replaceAll('"','""')+'"';const csv=[headers.join(','),...rows.map(r=>headers.map(h=>q(r[h]??(h==='login'?r.login_input:''))).join(','))].join('\n');const blob=new Blob(['\ufeff'+csv],{type:'text/csv;charset=utf-8'});const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=name;a.click();URL.revokeObjectURL(a.href)}
+loadGroups();renderSelectedGroups();
+</script></body></html>
