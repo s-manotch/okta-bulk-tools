@@ -67,3 +67,4 @@ private_jwk.json
 __pycache__/
 .pytest_cache/
 .DS_Store
+!.env.example
