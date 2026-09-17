@@ -24,15 +24,15 @@ Required columns:
 
 ```csv
 firstName,lastName,login,email
-Manotchawit,Sriwiset,manotchawit.user@consular.go.th,manotchawit.s@mfa.go.th
+Alice,Example,alice.user@example.com,alice.notify@example.com
 ```
 
 Optional columns:
 
 ```csv
 firstName,lastName,login,email,department,groups
-Manotchawit,Sriwiset,manotchawit.user@consular.go.th,manotchawit.s@mfa.go.th,KMG,legal
-Jane,Doe,jane.d@consular.go.th,jane.d@mfa.go.th,KMG,"legal;zpa-user"
+Alice,Example,alice.user@example.com,alice.notify@example.com,DeptA,legal
+Jane,Doe,jane.d@example.com,jane.d.notify@example.com,DeptB,"legal;zpa-user"
 ```
 
 The GUI can also assign a **global group** to every new user, so a normal onboarding CSV does not need a group column at all.
@@ -79,8 +79,8 @@ Publish it through an internal Nginx / ZPA path rather than exposing port 8080 p
 
 ```csv
 login
-manotchawit.user@consular.go.th
-user2@consular.go.th
+alice.user@example.com
+user2@example.com
 ```
 
 Use Okta `profile.login`, which may differ from the user's delivery email.
