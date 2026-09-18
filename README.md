@@ -1,4 +1,4 @@
-# Okta Bulk User Tool v0.2
+# Okta Bulk User Tool v0.3
 
 Internal web GUI for common Okta onboarding operations.
 
@@ -61,9 +61,16 @@ For production, prefer a least-privilege custom admin role rather than Super Adm
 ## Quick start
 
 ```bash
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
 cp .env.example .env
-# edit .env
-chmod 600 .env private_jwk.json
+# Generate the web-login hash and copy the printed value into .env
+python -m app.secret_tool hash-password
+
+# Set OKTA_DOMAIN and OKTA_TOKEN in .env, then protect the file
+chmod 600 .env
 docker compose up -d --build
 ```
 
@@ -88,8 +95,10 @@ Use Okta `profile.login`, which may differ from the user's delivery email.
 ## Security notes
 
 - Keep `.env` and `private_jwk.json` out of Git.
+- `WEB_PASSWORD_HASH_B64` is a salted scrypt one-way hash; the original web password is never stored.
+- An SSWS API token cannot use a one-way hash because the app must send the original token to Okta. Therefore `OKTA_TOKEN` is plaintext in `.env`; use server secret management or OAuth when you are ready to harden the deployment.
 - Keep the private JWK on the server only.
-- Put the app behind ZPA/internal reverse proxy and authentication.
+- Put the app behind an HTTPS-enabled ZPA/internal reverse proxy; HTTP Basic credentials are not encrypted without TLS.
 - Keep Preview as the normal first step.
 - Activation is opt-in on Create Users; it is not enabled by default.
 - Result rows distinguish create, group, and activation failures so partial operations are visible.

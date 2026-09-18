@@ -20,9 +20,11 @@ from fastapi.templating import Jinja2Templates
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from pydantic import BaseModel
 
+from app.security import verify_password_b64
+
 load_dotenv()
 
-app = FastAPI(title="Okta Bulk User Tool", version="0.2.0")
+app = FastAPI(title="Okta Bulk User Tool", version="0.3.0")
 templates = Jinja2Templates(directory="app/templates")
 security = HTTPBasic(auto_error=False)
 
@@ -35,18 +37,18 @@ SSWS_TOKEN = os.getenv("OKTA_TOKEN", "")
 SEND_DELAY = float(os.getenv("SEND_DELAY_SECONDS", "1.0"))
 API_RETRY_429 = int(os.getenv("API_RETRY_429", "2"))
 WEB_USERNAME = os.getenv("WEB_USERNAME", "")
-WEB_PASSWORD = os.getenv("WEB_PASSWORD", "")
+WEB_PASSWORD_HASH_B64 = os.getenv("WEB_PASSWORD_HASH_B64", "")
 
 _token_cache: dict[str, Any] = {"token": None, "expires_at": 0}
 
 
 def require_web_auth(credentials: HTTPBasicCredentials | None = Depends(security)):
-    if not WEB_USERNAME and not WEB_PASSWORD:
+    if not WEB_USERNAME and not WEB_PASSWORD_HASH_B64:
         return True
     if credentials is None:
         raise HTTPException(status_code=401, detail="Authentication required", headers={"WWW-Authenticate": "Basic"})
     ok_user = secrets.compare_digest(credentials.username, WEB_USERNAME)
-    ok_pass = secrets.compare_digest(credentials.password, WEB_PASSWORD)
+    ok_pass = verify_password_b64(credentials.password, WEB_PASSWORD_HASH_B64)
     if not (ok_user and ok_pass):
         raise HTTPException(status_code=401, detail="Invalid credentials", headers={"WWW-Authenticate": "Basic"})
     return True
@@ -271,7 +273,7 @@ async def home(request: Request, _: bool = Depends(require_web_auth)):
 
 @app.get("/api/health")
 async def health(_: bool = Depends(require_web_auth)):
-    return {"ok": True, "version": "0.2.0", "auth_mode": AUTH_MODE, "domain_configured": bool(OKTA_DOMAIN)}
+    return {"ok": True, "version": "0.3.0", "auth_mode": AUTH_MODE, "domain_configured": bool(OKTA_DOMAIN)}
 
 
 @app.get("/api/groups")
