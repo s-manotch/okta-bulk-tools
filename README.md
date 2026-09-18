@@ -9,9 +9,10 @@ Internal web GUI for common Okta onboarding operations.
   - detects existing logins
   - assigns one or more global groups selected in the GUI
   - optional per-row groups from the CSV
-  - optional activation email after creation
   - detailed partial-failure reporting
-- **Resend Activation** for existing `PROVISIONED` users
+- **Send / Resend Activation** by loading all pending users from Okta
+  - includes `STAGED` users (send first activation) and `PROVISIONED` users (resend)
+  - select individual users or all eligible users before sending
 - **User Lookup** by Okta login
 - OAuth 2.0 Service App (`private_key_jwt`) or temporary SSWS token mode
 - Basic Auth for the GUI
@@ -41,10 +42,10 @@ Workflow:
 
 ```text
 CSV -> Preview/validate -> re-check existence -> create STAGED user
-    -> add selected group memberships -> optional activate + send email
+    -> add selected group memberships
 ```
 
-The tool intentionally creates the user with `activate=false`, adds groups, and only then activates the user when activation mail is requested. This avoids having to import a second group-assignment CSV.
+The tool intentionally creates the user with `activate=false` and adds groups first. Use the **Send / Resend Activation** tab afterwards to load `STAGED` / `PROVISIONED` users, select the intended recipients, and ask Okta to send their activation email.
 
 ## OAuth Service App
 

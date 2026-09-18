@@ -3,12 +3,13 @@ import csv
 import io
 import json
 import os
+import re
 import secrets
 import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 import httpx
 import jwt
@@ -166,21 +167,58 @@ async def lookup_user(login: str) -> dict[str, Any]:
     if result.status_code != 200:
         return {"login_input": login, "ok": False, "http": result.status_code, "error": error_text(result)}
 
-    user = result.data
+    return user_summary(result.data, login_input=login)
+
+
+def user_summary(user: dict[str, Any], login_input: str | None = None) -> dict[str, Any]:
     profile = user.get("profile", {})
     links = user.get("_links", {})
+    status = user.get("status")
+    can_activate = "activate" in links
+    can_reactivate = "reactivate" in links
+    activation_action = "activate" if status == "STAGED" else "reactivate" if status == "PROVISIONED" else None
     return {
-        "login_input": login,
+        "login_input": login_input or profile.get("login"),
         "ok": True,
         "id": user.get("id"),
-        "status": user.get("status"),
+        "status": status,
         "login": profile.get("login"),
         "email": profile.get("email"),
         "firstName": profile.get("firstName"),
         "lastName": profile.get("lastName"),
         "department": profile.get("department"),
-        "can_reactivate": "reactivate" in links,
+        "can_activate": can_activate,
+        "can_reactivate": can_reactivate,
+        "activation_action": activation_action,
     }
+
+
+def next_page_path(link_header: str) -> str | None:
+    match = re.search(r'<([^>]+)>;\s*rel="next"', link_header)
+    if not match:
+        return None
+    parsed = urlsplit(match.group(1))
+    return f"{parsed.path}?{parsed.query}" if parsed.query else parsed.path
+
+
+async def list_users_with_status(status: str) -> list[dict[str, Any]]:
+    path = f'/api/v1/users?filter=status%20eq%20%22{quote(status, safe="")}%22&limit=200'
+    users: list[dict[str, Any]] = []
+    while path:
+        result = await okta_request("GET", path)
+        if result.status_code != 200:
+            raise HTTPException(result.status_code, error_text(result))
+        users.extend(result.data)
+        path = next_page_path(result.headers.get("link", ""))
+    return users
+
+
+async def list_pending_activation_users() -> list[dict[str, Any]]:
+    staged, provisioned = await asyncio.gather(
+        list_users_with_status("STAGED"),
+        list_users_with_status("PROVISIONED"),
+    )
+    return sorted((user_summary(user) for user in staged + provisioned), key=lambda user: (user["status"], (user["login"] or "").lower()))
 
 
 async def list_groups() -> list[dict[str, Any]]:
@@ -262,7 +300,6 @@ class CreateUserRow(BaseModel):
 class BulkCreateRequest(BaseModel):
     rows: list[CreateUserRow]
     global_group_ids: list[str] = []
-    send_activation: bool = False
     confirmation: str
 
 
@@ -279,6 +316,20 @@ async def health(_: bool = Depends(require_web_auth)):
 @app.get("/api/groups")
 async def api_groups(_: bool = Depends(require_web_auth)):
     return {"groups": await list_groups()}
+
+
+@app.get("/api/activation/pending")
+async def pending_activation_users(_: bool = Depends(require_web_auth)):
+    users = await list_pending_activation_users()
+    return {
+        "summary": {
+            "total": len(users),
+            "STAGED": sum(user["status"] == "STAGED" for user in users),
+            "PROVISIONED": sum(user["status"] == "PROVISIONED" for user in users),
+            "eligible": sum(user["activation_action"] is not None for user in users),
+        },
+        "users": users,
+    }
 
 
 @app.post("/api/lookup")
@@ -337,18 +388,12 @@ async def bulk_send(payload: BulkSendRequest, _: bool = Depends(require_web_auth
         if not user.get("ok"):
             results.append({**user, "result": "LOOKUP_ERROR"})
             continue
-        status = user.get("status")
-        if status == "ACTIVE":
-            results.append({**user, "result": "SKIPPED_ACTIVE"})
-            continue
-        if status != "PROVISIONED":
-            results.append({**user, "result": f"SKIPPED_{status}"})
-            continue
-        if not user.get("can_reactivate"):
-            results.append({**user, "result": "SKIPPED_NO_REACTIVATE_LINK"})
+        action = user.get("activation_action")
+        if not action:
+            results.append({**user, "result": f"SKIPPED_{user.get('status')}"})
             continue
 
-        sent = await okta_request("POST", f"/api/v1/users/{quote(user['id'], safe='')}/lifecycle/reactivate?sendEmail=true")
+        sent = await okta_request("POST", f"/api/v1/users/{quote(user['id'], safe='')}/lifecycle/{action}?sendEmail=true")
         if sent.status_code == 200:
             results.append({**user, "result": "SENT", "http": 200})
         else:
@@ -498,22 +543,8 @@ async def create_send(payload: BulkCreateRequest, _: bool = Depends(require_web_
             group_results.append({"group_id": gid, "ok": ok, "http": added.status_code, "error": "" if ok else error_text(added)})
             group_failed = group_failed or not ok
 
-        activation_result = "NOT_REQUESTED"
-        activation_http = None
-        activation_error = ""
-        if payload.send_activation:
-            activated = await okta_request("POST", f"/api/v1/users/{quote(uid, safe='')}/lifecycle/activate?sendEmail=true")
-            activation_http = activated.status_code
-            if activated.status_code == 200:
-                activation_result = "SENT"
-            else:
-                activation_result = "ACTIVATION_ERROR"
-                activation_error = error_text(activated)
-
         if group_failed:
             result = "PARTIAL_GROUP_ERROR"
-        elif activation_result == "ACTIVATION_ERROR":
-            result = "PARTIAL_ACTIVATION_ERROR"
         else:
             result = "CREATED"
 
@@ -523,9 +554,8 @@ async def create_send(payload: BulkCreateRequest, _: bool = Depends(require_web_
             "status": created.data.get("status"),
             "result": result,
             "group_results": group_results,
-            "activation": activation_result,
-            "activation_http": activation_http,
-            "error": activation_error,
+            "activation": "NOT_SENT",
+            "error": "",
         })
         if idx < len(payload.rows) - 1:
             await asyncio.sleep(SEND_DELAY)
