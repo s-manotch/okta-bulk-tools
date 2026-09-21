@@ -187,6 +187,7 @@ def user_summary(user: dict[str, Any], login_input: str | None = None) -> dict[s
         "email": profile.get("email"),
         "firstName": profile.get("firstName"),
         "lastName": profile.get("lastName"),
+        "organization": profile.get("organization"),
         "department": profile.get("department"),
         "can_activate": can_activate,
         "can_reactivate": can_reactivate,
