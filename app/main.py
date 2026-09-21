@@ -37,6 +37,7 @@ SCOPES = os.getenv("OKTA_SCOPES", "okta.users.manage okta.groups.manage")
 SSWS_TOKEN = os.getenv("OKTA_TOKEN", "")
 SEND_DELAY = float(os.getenv("SEND_DELAY_SECONDS", "1.0"))
 API_RETRY_429 = int(os.getenv("API_RETRY_429", "2"))
+MAX_ACTIVATION_BATCH = int(os.getenv("MAX_ACTIVATION_BATCH", "50"))
 WEB_USERNAME = os.getenv("WEB_USERNAME", "")
 WEB_PASSWORD_HASH_B64 = os.getenv("WEB_PASSWORD_HASH_B64", "")
 
@@ -201,8 +202,7 @@ def next_page_path(link_header: str) -> str | None:
     return f"{parsed.path}?{parsed.query}" if parsed.query else parsed.path
 
 
-async def list_users_with_status(status: str) -> list[dict[str, Any]]:
-    path = f'/api/v1/users?filter=status%20eq%20%22{quote(status, safe="")}%22&limit=200'
+async def list_users(path: str) -> list[dict[str, Any]]:
     users: list[dict[str, Any]] = []
     while path:
         result = await okta_request("GET", path)
@@ -211,6 +211,15 @@ async def list_users_with_status(status: str) -> list[dict[str, Any]]:
         users.extend(result.data)
         path = next_page_path(result.headers.get("link", ""))
     return users
+
+
+async def list_users_with_status(status: str) -> list[dict[str, Any]]:
+    return await list_users(f'/api/v1/users?filter=status%20eq%20%22{quote(status, safe="")}%22&limit=200')
+
+
+async def list_user_directory() -> list[dict[str, Any]]:
+    users = await list_users("/api/v1/users?limit=200")
+    return sorted((user_summary(user) for user in users), key=lambda user: (user["login"] or "").lower())
 
 
 async def list_pending_activation_users() -> list[dict[str, Any]]:
@@ -285,6 +294,7 @@ class LookupRequest(BaseModel):
 
 class BulkSendRequest(BaseModel):
     logins: list[str]
+    batch_size: int = 20
     confirmation: str
 
 
@@ -330,6 +340,12 @@ async def pending_activation_users(_: bool = Depends(require_web_auth)):
         },
         "users": users,
     }
+
+
+@app.get("/api/users/directory")
+async def user_directory(_: bool = Depends(require_web_auth)):
+    users = await list_user_directory()
+    return {"count": len(users), "users": users}
 
 
 @app.post("/api/lookup")
@@ -378,6 +394,10 @@ async def bulk_preview(file: UploadFile = File(...), _: bool = Depends(require_w
 async def bulk_send(payload: BulkSendRequest, _: bool = Depends(require_web_auth)):
     if payload.confirmation != "SEND":
         raise HTTPException(400, 'confirmation must be exactly "SEND"')
+    if not 1 <= payload.batch_size <= MAX_ACTIVATION_BATCH:
+        raise HTTPException(400, f"batch_size must be between 1 and {MAX_ACTIVATION_BATCH}")
+    if len(payload.logins) > payload.batch_size:
+        raise HTTPException(400, "Too many users in one send request; choose a smaller batch")
 
     results = []
     for idx, raw_login in enumerate(payload.logins):
