@@ -18,6 +18,7 @@ Internal web GUI for common Okta onboarding operations.
 - Basic Auth for the GUI
 - retry on HTTP 429 and configurable delay between write operations
 - activation mail is processed in small batches (20, 30, or 50); the server enforces `MAX_ACTIVATION_BATCH`
+- successful activation-email sends are hidden for 24 hours by default, preventing accidental resend spam across container restarts
 - result CSV downloads
 
 ## Create-user CSV
@@ -97,6 +98,7 @@ Use Okta `profile.login`, which may differ from the user's delivery email.
 - `WEB_PASSWORD_HASH_B64` is a salted bcrypt one-way hash; the original web password is never stored.
 - An SSWS API token cannot use a one-way hash because the app must send the original token to Okta. Therefore `OKTA_TOKEN` is plaintext in `.env`; use server secret management or OAuth when you are ready to harden the deployment.
 - Start activation email with batches of 20 and keep `SEND_DELAY_SECONDS=1.0` or higher when your mail gateway is sensitive to message bursts. The UI never sends more than `MAX_ACTIVATION_BATCH` recipients in one request.
+- Set `ACTIVATION_COOLDOWN_HOURS=24` (or another value) to control how long a successfully emailed user is hidden from the pending-activation list. This state is stored in the Docker volume `activation_data`.
 - Keep the private JWK on the server only.
 - Put the app behind an HTTPS-enabled ZPA/internal reverse proxy; HTTP Basic credentials are not encrypted without TLS.
 - Keep Preview as the normal first step.

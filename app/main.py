@@ -5,9 +5,11 @@ import json
 import os
 import re
 import secrets
+import sqlite3
 import time
 import uuid
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote, urlsplit
 
@@ -38,10 +40,61 @@ SSWS_TOKEN = os.getenv("OKTA_TOKEN", "")
 SEND_DELAY = float(os.getenv("SEND_DELAY_SECONDS", "1.0"))
 API_RETRY_429 = int(os.getenv("API_RETRY_429", "2"))
 MAX_ACTIVATION_BATCH = int(os.getenv("MAX_ACTIVATION_BATCH", "50"))
+ACTIVATION_COOLDOWN_HOURS = float(os.getenv("ACTIVATION_COOLDOWN_HOURS", "24"))
+ACTIVATION_DB_PATH = os.getenv("ACTIVATION_DB_PATH", "/data/okta_bulk_tool.db")
 WEB_USERNAME = os.getenv("WEB_USERNAME", "")
 WEB_PASSWORD_HASH_B64 = os.getenv("WEB_PASSWORD_HASH_B64", "")
 
 _token_cache: dict[str, Any] = {"token": None, "expires_at": 0}
+
+
+def activation_db() -> sqlite3.Connection:
+    Path(ACTIVATION_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(ACTIVATION_DB_PATH, timeout=10)
+    connection.execute(
+        """CREATE TABLE IF NOT EXISTS activation_sends (
+            user_id TEXT PRIMARY KEY,
+            login TEXT NOT NULL,
+            last_sent_at INTEGER NOT NULL
+        )"""
+    )
+    return connection
+
+
+def activation_cooldown_seconds() -> int:
+    return max(0, int(ACTIVATION_COOLDOWN_HOURS * 3600))
+
+
+def users_in_activation_cooldown(user_ids: list[str]) -> set[str]:
+    if not user_ids or activation_cooldown_seconds() == 0:
+        return set()
+    placeholders = ",".join("?" for _ in user_ids)
+    cutoff = int(time.time()) - activation_cooldown_seconds()
+    with activation_db() as connection:
+        rows = connection.execute(
+            f"SELECT user_id FROM activation_sends WHERE last_sent_at >= ? AND user_id IN ({placeholders})",
+            [cutoff, *user_ids],
+        ).fetchall()
+    return {row[0] for row in rows}
+
+
+def activation_cooldown_remaining(user_id: str | None) -> int:
+    if not user_id or activation_cooldown_seconds() == 0:
+        return 0
+    with activation_db() as connection:
+        row = connection.execute("SELECT last_sent_at FROM activation_sends WHERE user_id = ?", [user_id]).fetchone()
+    if not row:
+        return 0
+    return max(0, row[0] + activation_cooldown_seconds() - int(time.time()))
+
+
+def record_activation_sent(user_id: str, login: str) -> None:
+    with activation_db() as connection:
+        connection.execute(
+            """INSERT INTO activation_sends (user_id, login, last_sent_at) VALUES (?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET login = excluded.login, last_sent_at = excluded.last_sent_at""",
+            [user_id, login, int(time.time())],
+        )
 
 
 def require_web_auth(credentials: HTTPBasicCredentials | None = Depends(security)):
@@ -223,12 +276,15 @@ async def list_user_directory() -> list[dict[str, Any]]:
     return sorted((user_summary(user) for user in users), key=lambda user: (user["login"] or "").lower())
 
 
-async def list_pending_activation_users() -> list[dict[str, Any]]:
+async def list_pending_activation_users() -> tuple[list[dict[str, Any]], int]:
     staged, provisioned = await asyncio.gather(
         list_users_with_status("STAGED"),
         list_users_with_status("PROVISIONED"),
     )
-    return sorted((user_summary(user) for user in staged + provisioned), key=lambda user: (user["status"], (user["login"] or "").lower()))
+    users = [user_summary(user) for user in staged + provisioned]
+    cooling_down = users_in_activation_cooldown([user["id"] for user in users if user.get("id")])
+    visible = [user for user in users if user.get("id") not in cooling_down]
+    return sorted(visible, key=lambda user: (user["status"], (user["login"] or "").lower())), len(cooling_down)
 
 
 async def list_groups() -> list[dict[str, Any]]:
@@ -331,13 +387,15 @@ async def api_groups(_: bool = Depends(require_web_auth)):
 
 @app.get("/api/activation/pending")
 async def pending_activation_users(_: bool = Depends(require_web_auth)):
-    users = await list_pending_activation_users()
+    users, cooling_down = await list_pending_activation_users()
     return {
         "summary": {
             "total": len(users),
             "STAGED": sum(user["status"] == "STAGED" for user in users),
             "PROVISIONED": sum(user["status"] == "PROVISIONED" for user in users),
             "eligible": sum(user["activation_action"] is not None for user in users),
+            "cooling_down": cooling_down,
+            "cooldown_hours": ACTIVATION_COOLDOWN_HOURS,
         },
         "users": users,
     }
@@ -413,9 +471,14 @@ async def bulk_send(payload: BulkSendRequest, _: bool = Depends(require_web_auth
         if not action:
             results.append({**user, "result": f"SKIPPED_{user.get('status')}"})
             continue
+        remaining = activation_cooldown_remaining(user.get("id"))
+        if remaining:
+            results.append({**user, "result": "SKIPPED_COOLDOWN", "cooldown_minutes_remaining": (remaining + 59) // 60})
+            continue
 
         sent = await okta_request("POST", f"/api/v1/users/{quote(user['id'], safe='')}/lifecycle/{action}?sendEmail=true")
         if sent.status_code == 200:
+            record_activation_sent(user["id"], user.get("login") or login)
             results.append({**user, "result": "SENT", "http": 200})
         else:
             results.append({**user, "result": "SEND_ERROR", "http": sent.status_code, "error": error_text(sent)})
