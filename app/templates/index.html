@@ -82,7 +82,7 @@
 let previewRows=[],sendResults=[],createPreviewRows=[],createResults=[],groups=[],selectedGroupIds=[];
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 function showTab(id,btn){document.querySelectorAll('.panel').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.getElementById(id).classList.add('active');btn.classList.add('active')}
-async function jsonFetch(url,options={}){const r=await fetch(url,options);let d;try{d=await r.json()}catch{d={detail:await r.text()}}if(!r.ok)throw new Error(d.detail||JSON.stringify(d));return d}
+async function jsonFetch(url,options={}){const r=await fetch(url,options),raw=await r.text();let d;try{d=raw?JSON.parse(raw):{}}catch{d={detail:raw}}if(!r.ok)throw new Error(d.detail||raw||`HTTP ${r.status}`);return d}
 
 async function loadGroups(){try{const d=await jsonFetch('/api/groups');groups=d.groups;const s=document.getElementById('groupSelect');s.innerHTML='<option value="">เลือก Group...</option>'+groups.map(g=>`<option value="${esc(g.id)}">${esc(g.name)}${g.type?` (${esc(g.type)})`:''}</option>`).join('')}catch(e){document.getElementById('groupSelect').innerHTML='<option>โหลด Group ไม่สำเร็จ</option>'}}
 function addSelectedGroup(){const s=document.getElementById('groupSelect'),id=s.value;if(id&&!selectedGroupIds.includes(id)){selectedGroupIds.push(id);renderSelectedGroups()}}

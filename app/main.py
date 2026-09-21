@@ -463,7 +463,11 @@ async def bulk_send(payload: BulkSendRequest, _: bool = Depends(require_web_auth
         login = raw_login.strip()
         if not login:
             continue
-        user = await lookup_user(login)
+        try:
+            user = await lookup_user(login)
+        except Exception as exc:
+            results.append({"login_input": login, "result": "LOOKUP_ERROR", "error": str(exc)})
+            continue
         if not user.get("ok"):
             results.append({**user, "result": "LOOKUP_ERROR"})
             continue
@@ -476,10 +480,18 @@ async def bulk_send(payload: BulkSendRequest, _: bool = Depends(require_web_auth
             results.append({**user, "result": "SKIPPED_COOLDOWN", "cooldown_minutes_remaining": (remaining + 59) // 60})
             continue
 
-        sent = await okta_request("POST", f"/api/v1/users/{quote(user['id'], safe='')}/lifecycle/{action}?sendEmail=true")
+        try:
+            sent = await okta_request("POST", f"/api/v1/users/{quote(user['id'], safe='')}/lifecycle/{action}?sendEmail=true")
+        except Exception as exc:
+            results.append({**user, "result": "SEND_ERROR", "error": str(exc)})
+            continue
         if sent.status_code == 200:
-            record_activation_sent(user["id"], user.get("login") or login)
-            results.append({**user, "result": "SENT", "http": 200})
+            try:
+                record_activation_sent(user["id"], user.get("login") or login)
+            except Exception as exc:
+                results.append({**user, "result": "SENT_COOLDOWN_RECORD_ERROR", "http": 200, "error": str(exc)})
+            else:
+                results.append({**user, "result": "SENT", "http": 200})
         else:
             results.append({**user, "result": "SEND_ERROR", "http": sent.status_code, "error": error_text(sent)})
         if idx < len(payload.logins) - 1:
