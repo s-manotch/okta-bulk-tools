@@ -46,6 +46,7 @@ WEB_USERNAME = os.getenv("WEB_USERNAME", "")
 WEB_PASSWORD_HASH_B64 = os.getenv("WEB_PASSWORD_HASH_B64", "")
 
 _token_cache: dict[str, Any] = {"token": None, "expires_at": 0}
+activation_jobs: dict[str, dict[str, Any]] = {}
 
 
 def activation_db() -> sqlite3.Connection:
@@ -458,45 +459,66 @@ async def bulk_send(payload: BulkSendRequest, _: bool = Depends(require_web_auth
     if len(payload.logins) > payload.batch_size:
         raise HTTPException(400, "Too many users in one send request; choose a smaller batch")
 
-    results = []
-    for idx, raw_login in enumerate(payload.logins):
-        login = raw_login.strip()
-        if not login:
-            continue
-        try:
-            user = await lookup_user(login)
-        except Exception as exc:
-            results.append({"login_input": login, "result": "LOOKUP_ERROR", "error": str(exc)})
-            continue
-        if not user.get("ok"):
-            results.append({**user, "result": "LOOKUP_ERROR"})
-            continue
-        action = user.get("activation_action")
-        if not action:
-            results.append({**user, "result": f"SKIPPED_{user.get('status')}"})
-            continue
-        remaining = activation_cooldown_remaining(user.get("id"))
-        if remaining:
-            results.append({**user, "result": "SKIPPED_COOLDOWN", "cooldown_minutes_remaining": (remaining + 59) // 60})
-            continue
+    logins = [login.strip() for login in payload.logins if login.strip()]
+    job_id = str(uuid.uuid4())
+    activation_jobs[job_id] = {"id": job_id, "status": "queued", "logins": logins, "results": [], "created_at": int(time.time())}
+    asyncio.create_task(process_activation_job(job_id))
+    return {"job_id": job_id, "count": len(logins), "status": "queued"}
 
-        try:
-            sent = await okta_request("POST", f"/api/v1/users/{quote(user['id'], safe='')}/lifecycle/{action}?sendEmail=true")
-        except Exception as exc:
-            results.append({**user, "result": "SEND_ERROR", "error": str(exc)})
-            continue
-        if sent.status_code == 200:
-            try:
-                record_activation_sent(user["id"], user.get("login") or login)
-            except Exception as exc:
-                results.append({**user, "result": "SENT_COOLDOWN_RECORD_ERROR", "http": 200, "error": str(exc)})
-            else:
-                results.append({**user, "result": "SENT", "http": 200})
-        else:
-            results.append({**user, "result": "SEND_ERROR", "http": sent.status_code, "error": error_text(sent)})
-        if idx < len(payload.logins) - 1:
-            await asyncio.sleep(SEND_DELAY)
-    return {"count": len(results), "results": results}
+
+async def send_activation_for_login(login: str) -> dict[str, Any]:
+    try:
+        user = await lookup_user(login)
+    except Exception as exc:
+        return {"login_input": login, "result": "LOOKUP_ERROR", "error": str(exc)}
+    if not user.get("ok"):
+        return {**user, "result": "LOOKUP_ERROR"}
+    action = user.get("activation_action")
+    if not action:
+        return {**user, "result": f"SKIPPED_{user.get('status')}"}
+    remaining = activation_cooldown_remaining(user.get("id"))
+    if remaining:
+        return {**user, "result": "SKIPPED_COOLDOWN", "cooldown_minutes_remaining": (remaining + 59) // 60}
+    try:
+        sent = await okta_request("POST", f"/api/v1/users/{quote(user['id'], safe='')}/lifecycle/{action}?sendEmail=true")
+    except Exception as exc:
+        return {**user, "result": "SEND_ERROR", "error": str(exc)}
+    if sent.status_code != 200:
+        return {**user, "result": "SEND_ERROR", "http": sent.status_code, "error": error_text(sent)}
+    try:
+        record_activation_sent(user["id"], user.get("login") or login)
+    except Exception as exc:
+        return {**user, "result": "SENT_COOLDOWN_RECORD_ERROR", "http": 200, "error": str(exc)}
+    return {**user, "result": "SENT", "http": 200}
+
+
+async def process_activation_job(job_id: str) -> None:
+    job = activation_jobs[job_id]
+    job["status"] = "running"
+    try:
+        for index, login in enumerate(job["logins"]):
+            job["results"].append(await send_activation_for_login(login))
+            if index < len(job["logins"]) - 1:
+                await asyncio.sleep(SEND_DELAY)
+        job["status"] = "completed"
+    except Exception as exc:
+        job["status"] = "failed"
+        job["error"] = str(exc)
+
+
+@app.get("/api/bulk/send/{job_id}")
+async def bulk_send_status(job_id: str, _: bool = Depends(require_web_auth)):
+    job = activation_jobs.get(job_id)
+    if not job:
+        raise HTTPException(404, "Send job not found; it may have been interrupted by an app restart")
+    return {
+        "job_id": job["id"],
+        "status": job["status"],
+        "count": len(job["logins"]),
+        "processed": len(job["results"]),
+        "results": job["results"],
+        "error": job.get("error", ""),
+    }
 
 
 @app.post("/api/create/preview")
