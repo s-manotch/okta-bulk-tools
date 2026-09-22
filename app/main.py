@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 from pydantic import BaseModel
@@ -28,6 +29,7 @@ from app.security import verify_password_b64
 load_dotenv()
 
 app = FastAPI(title="Okta Bulk User Tool", version="0.3.0")
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
 security = HTTPBasic(auto_error=False)
 
