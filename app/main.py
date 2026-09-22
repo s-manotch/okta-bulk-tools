@@ -98,6 +98,18 @@ def record_activation_sent(user_id: str, login: str) -> None:
         )
 
 
+def activation_cooldown_records() -> list[dict[str, Any]]:
+    if activation_cooldown_seconds() == 0:
+        return []
+    cutoff = int(time.time()) - activation_cooldown_seconds()
+    with activation_db() as connection:
+        rows = connection.execute(
+            "SELECT user_id, login, last_sent_at FROM activation_sends WHERE last_sent_at >= ? ORDER BY last_sent_at DESC",
+            [cutoff],
+        ).fetchall()
+    return [{"id": row[0], "login": row[1], "last_sent_at": row[2]} for row in rows]
+
+
 def require_web_auth(credentials: HTTPBasicCredentials | None = Depends(security)):
     if not WEB_USERNAME and not WEB_PASSWORD_HASH_B64:
         return True
@@ -396,6 +408,28 @@ async def pending_activation_users(_: bool = Depends(require_web_auth)):
             "PROVISIONED": sum(user["status"] == "PROVISIONED" for user in users),
             "eligible": sum(user["activation_action"] is not None for user in users),
             "cooling_down": cooling_down,
+            "cooldown_hours": ACTIVATION_COOLDOWN_HOURS,
+        },
+        "users": users,
+    }
+
+
+@app.get("/api/activation/cooldown")
+async def activation_cooldown_users(_: bool = Depends(require_web_auth)):
+    records = activation_cooldown_records()
+    users_by_id = {user["id"]: user for user in await list_user_directory() if user.get("id")}
+    users = []
+    for record in records:
+        current = users_by_id.get(record["id"])
+        if current:
+            users.append({**current, "last_sent_at": record["last_sent_at"]})
+        else:
+            users.append({"id": record["id"], "login": record["login"], "status": "NOT_FOUND", "last_sent_at": record["last_sent_at"]})
+    return {
+        "summary": {
+            "total": len(users),
+            "ACTIVE": sum(user.get("status") == "ACTIVE" for user in users),
+            "PENDING": sum(user.get("status") in {"STAGED", "PROVISIONED"} for user in users),
             "cooldown_hours": ACTIVATION_COOLDOWN_HOURS,
         },
         "users": users,
